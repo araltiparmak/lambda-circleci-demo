@@ -1,86 +1,83 @@
 version: 2.1
 
-orbs:
-  terraform: circleci/terraform@3.7
+parameters:
+  tf_dir:
+    type: string
+    default: "infra"
 
 workflows:
-  deploy_infrastructure:
+  version: 2
+  deploy:
     jobs:
-      # 1) Build Lambda and persist lambda.zip
       - build_package
-
-      # 2) Terraform fmt
-      - terraform/fmt:
-          checkout: true
-          context: terraform
-          path: infra
-          requires:
-            - build_package
-
-      # 3) Terraform validate
-      - terraform/validate:
-          checkout: true
-          context: terraform
-          path: infra
-          requires:
-            - terraform/fmt
-
-      # 4) Terraform plan (attach lambda.zip first)
-      - terraform/plan:
-          checkout: true
-          context: terraform
-          path: infra
-          persist-workspace: true
-          pre-steps:
-            - attach_workspace:
-                at: /tmp/workspace
-            - run:
-                name: Move lambda.zip into repo root for Terraform
-                command: |
-                  ls -la /tmp/workspace || true
-                  [ -f /tmp/workspace/lambda.zip ] && mv /tmp/workspace/lambda.zip . || echo "lambda.zip not found"
-                  ls -la
-          requires:
-            - terraform/validate
-
-      # 5) Manual approval before apply (recommended)
+      - tf_validate:
+          requires: [build_package]
+          context: [aws-deploy]
+      - tf_plan:
+          requires: [tf_validate]
+          context: [aws-deploy]
       - hold_for_approval:
           type: approval
-          requires:
-            - terraform/plan
-          filters:
-            branches:
-              only: main
+          requires: [tf_plan]
+          filters: { branches: { only: main } }
+      - tf_apply:
+          requires: [hold_for_approval]
+          context: [aws-deploy]
 
-      # 6) Terraform apply (reuses plan from workspace)
-      - terraform/apply:
-          attach-workspace: true
-          checkout: true
-          context: terraform
-          path: infra
-          requires:
-            - hold_for_approval
-          filters:
-            branches:
-              only: main
-
-# ---- Custom job: build_package (Node 22 + esbuild) ----
 jobs:
   build_package:
-    docker:
-      - image: cimg/node:22.21
+    docker: [ { image: cimg/node:22.21 } ]
     working_directory: ~/project
     steps:
       - checkout
       - run: npm ci
       - run: node build.mjs
       - run: zip -j lambda.zip dist/index.cjs
-      - run:
-          name: Show files
-          command: |
-            echo "Root:" && ls -la
-            echo "Infra:" && ls -la infra || true
+      - persist_to_workspace:
+          root: .
+          paths: [ lambda.zip ]
+
+  tf_validate:
+    docker: [ { image: hashicorp/terraform:1.13.0 } ]
+    working_directory: ~/project
+    environment: { TF_IN_AUTOMATION: "true", TF_INPUT: "false" }
+    steps:
+      - checkout
+      - run: |
+          cd "<< pipeline.parameters.tf_dir >>"
+          terraform init -input=false
+          terraform fmt -check
+          terraform validate
+
+  tf_plan:
+    docker: [ { image: hashicorp/terraform:1.13.0 } ]
+    working_directory: ~/project
+    environment: { TF_IN_AUTOMATION: "true", TF_INPUT: "false" }
+    steps:
+      - checkout
+      - attach_workspace: { at: /tmp/workspace }
+      - run: |
+          [ -f /tmp/workspace/lambda.zip ] && mv /tmp/workspace/lambda.zip . || true
+          cd "<< pipeline.parameters.tf_dir >>"
+          terraform init -input=false
+          terraform plan -input=false -out tfplan
+          terraform show -no-color tfplan > plan.txt
+      - store_artifacts: { path: << pipeline.parameters.tf_dir >>/plan.txt }
       - persist_to_workspace:
           root: .
           paths:
-            - lambda.zip
+            - << pipeline.parameters.tf_dir >>/tfplan
+            - << pipeline.parameters.tf_dir >>/.terraform
+            - << pipeline.parameters.tf_dir >>/.terraform.lock.hcl
+
+  tf_apply:
+    docker: [ { image: hashicorp/terraform:1.13.0 } ]
+    working_directory: ~/project
+    environment: { TF_IN_AUTOMATION: "true", TF_INPUT: "false" }
+    steps:
+      - checkout
+      - attach_workspace: { at: ~/project }
+      - run: |
+          cd "<< pipeline.parameters.tf_dir >>"
+          terraform init -input=false
+          terraform apply -auto-approve tfplan
