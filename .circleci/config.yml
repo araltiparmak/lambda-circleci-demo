@@ -22,7 +22,7 @@ jobs:
   terraform_plan:
     docker:
       - image: hashicorp/terraform:1.13
-    working_directory: ~/project/infra
+    working_directory: ~/project
     environment:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
@@ -33,47 +33,52 @@ jobs:
       - run:
           name: Terraform Init
           command: |
-            terraform init -input=false
+            cd infra && terraform init -input=false
       - run:
           name: Terraform Validate (fmt + validate)
           command: |
-            terraform fmt -check
-            terraform validate
+            cd infra && terraform fmt -check
+            cd infra && terraform validate
       - run:
           name: Terraform Plan (save as binary and human-readable)
           command: |
-            terraform plan -input=false -out tfplan
-            terraform show -no-color tfplan > plan.txt
+            cd infra && terraform plan -input=false -out tfplan
+            cd infra && terraform show -no-color tfplan > plan.txt
             echo "---- Terraform Plan (excerpt) ----"
-            head -n 200 plan.txt
+            head -n 200 infra/plan.txt
       - store_artifacts:
-          path: ~/project/infra/plan.txt
+          path: infra/plan.txt
           destination: plan.txt
       - store_artifacts:
-          path: ~/project/infra/tfplan
+          path: infra/tfplan
           destination: tfplan
       - persist_to_workspace:
-          root: ~/project/infra
+          root: .
           paths:
-            - tfplan
+            - infra/tfplan
+            - infra/.terraform
+            - infra/.terraform.lock.hcl
+            - infra/plan.txt
 
   terraform_apply:
     docker:
       - image: hashicorp/terraform:1.13
-    working_directory: ~/project/infra
+    working_directory: ~/project
     environment:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
     steps:
       - checkout
       - attach_workspace:
-          at: ~/project/infra
+          at: ~/project
       - run:
           name: Terraform Init (same backend/plugins)
-          command: terraform init -input=false
+          command: |
+            cd infra && terraform init -input=false
 #      - run:
 #          name: Terraform Apply (using reviewed plan)
-#          command: terraform apply -auto-approve tfplan
+#          command: |
+#            cd infra && terraform apply -auto-approve tfplan
 
 workflows:
   version: 2
