@@ -6,43 +6,23 @@ orbs:
 parameters:
   tf_dir:
     type: string
-    default: "infra"   # TF root folder in your repo
+    default: "infra"
 
 jobs:
-  # -------------------------------
-  # 1) Build + package Lambda
-  # -------------------------------
   build_package:
     docker:
       - image: cimg/node:22.21
     working_directory: ~/project
     steps:
       - checkout
-      - run:
-          name: Install deps
-          command: npm ci
-      - run:
-          name: Build code (esbuild)
-          command: node build.mjs
-      - run:
-          name: Package zip
-          command: zip -j lambda.zip dist/index.cjs
-      - run:
-          name: Show folder structure
-          command: |
-            echo "== Repo root =="
-            ls -la
-            echo "== Infra folder =="
-            ls -la infra || echo "Infra folder not found!"
+      - run: npm ci
+      - run: node build.mjs
+      - run: zip -j lambda.zip dist/index.cjs
       - persist_to_workspace:
           root: .
           paths:
             - lambda.zip
-            - << pipeline.parameters.tf_dir >>
 
-  # -------------------------------
-  # 2) Terraform Plan
-  # -------------------------------
   terraform_plan:
     docker:
       - image: hashicorp/terraform:1.13
@@ -51,19 +31,16 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
     steps:
-      # 🟢 Attach workspace first (contains infra + lambda.zip)
-      - attach_workspace:
-          at: ~/project
-
-      # 🟢 Checkout after attach — keeps workspace contents
       - checkout
 
-      # 🧪 Debug tree (optional)
-      - run:
-          name: Check folder structure
-          command: |
-            echo "== Root ==" && ls -la
-            echo "== Infra ==" && ls -la "<< pipeline.parameters.tf_dir >>"
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - run: |
+          ls -la /tmp/workspace || true
+          [ -f /tmp/workspace/lambda.zip ] && mv /tmp/workspace/lambda.zip ./ || echo "lambda.zip not found in workspace"
+          echo "Repo root:" && ls -la
+          echo "TF dir:" && ls -la "<< pipeline.parameters.tf_dir >>"
 
       - run:
           name: Terraform Init
@@ -81,7 +58,6 @@ jobs:
           command: |
             cd "<< pipeline.parameters.tf_dir >>" && terraform plan -input=false -out tfplan
             cd "<< pipeline.parameters.tf_dir >>" && terraform show -no-color tfplan > plan.txt
-            echo "---- Terraform Plan (excerpt) ----"
             head -n 200 "<< pipeline.parameters.tf_dir >>/plan.txt"
 
       - store_artifacts:
@@ -109,26 +85,23 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
     steps:
-      - attach_workspace:
-          at: ~/project
       - checkout
-      - run:
-          name: Check folder before apply
-          command: |
-            echo "== Root ==" && ls -la
-            echo "== Infra ==" && ls -la "<< pipeline.parameters.tf_dir >>"
+      - attach_workspace:
+          at: /tmp/workspace
+      - run: |
+          # plan aşamasından gelen tfplan ve .terraform dosyaları repo köküne geliyor (persist root: .)
+          # bu yüzden bir şey taşımaya gerek yok; sadece kontrol edelim
+          echo "Repo root:" && ls -la
+          echo "Infra content:" && ls -la "<< pipeline.parameters.tf_dir >>"
       - run:
           name: Terraform Init
           command: |
             cd "<< pipeline.parameters.tf_dir >>" && terraform init -input=false
       - run:
-          name: Terraform Apply (auto-approved after review)
+          name: Terraform Apply
           command: |
             cd "<< pipeline.parameters.tf_dir >>" && terraform apply -auto-approve tfplan
 
-# -------------------------------
-# 4) Workflow
-# -------------------------------
 workflows:
   version: 2
   plan_review_apply:
@@ -139,12 +112,10 @@ workflows:
               only:
                 - main
                 - /feature\/.*/
-
       - terraform_plan:
           requires:
             - build_package
           context: [aws-deploy]
-
       - hold_for_approval:
           type: approval
           requires:
@@ -152,7 +123,6 @@ workflows:
           filters:
             branches:
               only: main
-
       - terraform_apply:
           requires:
             - hold_for_approval
