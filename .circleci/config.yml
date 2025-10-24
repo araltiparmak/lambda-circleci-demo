@@ -1,0 +1,102 @@
+version: 2.1
+
+orbs:
+  node: circleci/node@7.2.1
+
+jobs:
+  build_package:
+    docker:
+      - image: cimg/node:22.21
+    working_directory: ~/project
+    steps:
+      - checkout
+      - run: npm ci
+      - run: node build.mjs
+      - run: zip -j lambda.zip dist/index.cjs
+      - persist_to_workspace:
+          root: .
+          paths:
+            - lambda.zip
+            - terraform
+
+  terraform_plan:
+    docker:
+      - image: hashicorp/terraform:1.13
+    working_directory: ~/project/infra
+    environment:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/project
+      - run:
+          name: Terraform Init
+          command: |
+            terraform init -input=false
+      - run:
+          name: Terraform Validate (fmt + validate)
+          command: |
+            terraform fmt -check
+            terraform validate
+      - run:
+          name: Terraform Plan (save as binary and human-readable)
+          command: |
+            terraform plan -input=false -out tfplan
+            terraform show -no-color tfplan > plan.txt
+            echo "---- Terraform Plan (excerpt) ----"
+            head -n 200 plan.txt
+      - store_artifacts:
+          path: ~/project/infra/plan.txt
+          destination: plan.txt
+      - store_artifacts:
+          path: ~/project/infra/tfplan
+          destination: tfplan
+      - persist_to_workspace:
+          root: ~/project/infra
+          paths:
+            - tfplan
+
+  terraform_apply:
+    docker:
+      - image: hashicorp/terraform:1.13
+    working_directory: ~/project/infra
+    environment:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+    steps:
+      - checkout
+      - attach_workspace:
+          at: ~/project/infra
+      - run:
+          name: Terraform Init (same backend/plugins)
+          command: terraform init -input=false
+#      - run:
+#          name: Terraform Apply (using reviewed plan)
+#          command: terraform apply -auto-approve tfplan
+
+workflows:
+  version: 2
+  plan_review_apply:
+    jobs:
+      - build_package:
+          filters:
+            branches:
+              only:
+                - main
+                - /feature\/.*/
+      - terraform_plan:
+          requires:
+            - build_package
+          context: [aws-deploy]
+      - hold_for_approval:
+          type: approval
+          requires:
+            - terraform_plan
+          filters:
+            branches:
+              only: main
+      - terraform_apply:
+          requires:
+            - hold_for_approval
+          context: [aws-deploy]
