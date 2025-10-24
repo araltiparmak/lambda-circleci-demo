@@ -1,7 +1,9 @@
 version: 2.1
 
-orbs:
-  node: circleci/node@7.2.1
+parameters:
+  tf_dir:
+    type: string
+    default: "infra"   # repo’daki TF klasör adın: "infra" veya "terraform"
 
 jobs:
   build_package:
@@ -13,11 +15,16 @@ jobs:
       - run: npm ci
       - run: node build.mjs
       - run: zip -j lambda.zip dist/index.cjs
+      - run: |
+          echo "Repo root:"
+          ls -la
+          echo "TF dir listing:"
+          ls -la "<< pipeline.parameters.tf_dir >>" || echo "No TF dir found"
       - persist_to_workspace:
           root: .
           paths:
             - lambda.zip
-            - infra
+            - << pipeline.parameters.tf_dir >>
 
   terraform_plan:
     docker:
@@ -30,35 +37,38 @@ jobs:
       - checkout
       - attach_workspace:
           at: ~/project
+      - run: |
+          echo "After attach, repo root:" && ls -la
+          echo "TF dir:" && ls -la "<< pipeline.parameters.tf_dir >>"
       - run:
           name: Terraform Init
           command: |
-            cd infra && terraform init -input=false
+            cd "<< pipeline.parameters.tf_dir >>" && terraform init -input=false
       - run:
           name: Terraform Validate (fmt + validate)
           command: |
-            cd infra && terraform fmt -check
-            cd infra && terraform validate
+            cd "<< pipeline.parameters.tf_dir >>" && terraform fmt -check
+            cd "<< pipeline.parameters.tf_dir >>" && terraform validate
       - run:
           name: Terraform Plan (save as binary and human-readable)
           command: |
-            cd infra && terraform plan -input=false -out tfplan
-            cd infra && terraform show -no-color tfplan > plan.txt
+            cd "<< pipeline.parameters.tf_dir >>" && terraform plan -input=false -out tfplan
+            cd "<< pipeline.parameters.tf_dir >>" && terraform show -no-color tfplan > plan.txt
             echo "---- Terraform Plan (excerpt) ----"
-            head -n 200 infra/plan.txt
+            head -n 200 "<< pipeline.parameters.tf_dir >>/plan.txt"
       - store_artifacts:
-          path: infra/plan.txt
+          path: << pipeline.parameters.tf_dir >>/plan.txt
           destination: plan.txt
       - store_artifacts:
-          path: infra/tfplan
+          path: << pipeline.parameters.tf_dir >>/tfplan
           destination: tfplan
       - persist_to_workspace:
           root: .
           paths:
-            - infra/tfplan
-            - infra/.terraform
-            - infra/.terraform.lock.hcl
-            - infra/plan.txt
+            - << pipeline.parameters.tf_dir >>/tfplan
+            - << pipeline.parameters.tf_dir >>/.terraform
+            - << pipeline.parameters.tf_dir >>/.terraform.lock.hcl
+            - << pipeline.parameters.tf_dir >>/plan.txt
 
   terraform_apply:
     docker:
@@ -74,11 +84,11 @@ jobs:
       - run:
           name: Terraform Init (same backend/plugins)
           command: |
-            cd infra && terraform init -input=false
+            cd "<< pipeline.parameters.tf_dir >>" && terraform init -input=false
 #      - run:
 #          name: Terraform Apply (using reviewed plan)
 #          command: |
-#            cd infra && terraform apply -auto-approve tfplan
+      #       cd "<< pipeline.parameters.tf_dir >>" && terraform apply -auto-approve tfplan
 
 workflows:
   version: 2
