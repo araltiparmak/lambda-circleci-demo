@@ -17,7 +17,7 @@ jobs:
           root: .
           paths:
             - lambda.zip
-            - terraform
+            - infra
 
   terraform_plan:
     docker:
